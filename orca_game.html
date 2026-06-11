@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🐋 ORCA</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#030d1a;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:'Segoe UI',sans-serif;color:#fff;user-select:none;}
+h1{font-size:26px;font-weight:900;color:#38bdf8;letter-spacing:3px;text-shadow:0 0 16px #38bdf866;margin-bottom:8px;}
+#hud{display:flex;justify-content:space-between;align-items:center;width:640px;padding:6px 2px;font-size:16px;}
+#bar{width:200px;height:14px;background:#0c2030;border-radius:7px;overflow:hidden;border:1px solid #38bdf833;}
+#fill{height:100%;background:#38bdf8;border-radius:7px;transition:width .15s;}
+#gameCanvas{border-radius:16px;border:2px solid #38bdf833;display:block;cursor:none;}
+#wrapper{position:relative;}
+#msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:#38bdf8;font-size:20px;line-height:2;pointer-events:none;}
+#over{display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(3,13,26,.94);border:1.5px solid #38bdf844;border-radius:20px;padding:36px 52px;text-align:center;}
+#over h2{font-size:30px;color:#38bdf8;margin-bottom:10px;}
+#over p{color:#aaa;margin-bottom:18px;font-size:16px;}
+#over button{background:#38bdf8;color:#030d1a;border:none;padding:12px 32px;font-size:16px;font-weight:800;border-radius:10px;cursor:pointer;}
+#hint{font-size:13px;color:#ffffff44;margin-top:6px;}
+</style>
+</head>
+<body>
+<h1>🐋 ORCA</h1>
+<div id="hud">
+  <div>🐟 <span id="sc">0</span>匹</div>
+  <div style="display:flex;align-items:center;gap:8px;font-size:14px;">
+    成長<div id="bar"><div id="fill" style="width:0%"></div></div>
+  </div>
+  <div>サイズ <span id="sz">1</span></div>
+</div>
+<div id="wrapper">
+  <canvas id="gameCanvas" width="640" height="520"></canvas>
+  <div id="msg">🐋 タップかクリックで開始！<br><span style="font-size:15px;opacity:.7">マウス・タッチでシャチを動かそう</span></div>
+  <div id="over">
+    <h2>GAME OVER</h2>
+    <p>食べた数: <span id="fsc">0</span>匹　最大サイズ: <span id="fsz">1</span></p>
+    <button onclick="restart()">もう一度！</button>
+  </div>
+</div>
+<div id="hint">マウス / 指でシャチを誘導　— 小さい生き物を食べて大きくなろう！</div>
+
+<script>
+const cv = document.getElementById('gameCanvas');
+const cx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+
+// ── state ──
+let o, fish, parts, score, sz, xp, xpMax, frame, running, started, mx, my, maxSz;
+
+// prey catalogue  {emoji, color, r, xp, spd, minSz}
+const PREY = [
+  {e:'🐟', col:'#7dd3fc', r:8,  xp:1, spd:2.2, min:1},
+  {e:'🦐', col:'#fb923c', r:9,  xp:1, spd:2.8, min:1},
+  {e:'🦀', col:'#ef4444', r:11, xp:2, spd:1.0, min:1},
+  {e:'🐙', col:'#c084fc', r:13, xp:2, spd:1.2, min:1},
+  {e:'🐡', col:'#fbbf24', r:14, xp:3, spd:1.4, min:2},
+  {e:'🐠', col:'#f97316', r:12, xp:2, spd:2.4, min:1},
+  {e:'🦑', col:'#a78bfa', r:15, xp:3, spd:1.6, min:2},
+  {e:'🐢', col:'#4ade80', r:18, xp:4, spd:0.9, min:2},
+  {e:'🎏', col:'#f9a8d4', r:20, xp:5, spd:1.8, min:3},
+  {e:'🐬', col:'#93c5fd', r:26, xp:8, spd:3.0, min:4},
+  {e:'🦈', col:'#94a3b8', r:32, xp:12,spd:2.6, min:5},
+  {e:'🐳', col:'#60a5fa', r:38, xp:18,spd:1.4, min:6},
+];
+// danger  {emoji, col, r, minSz, maxSz}
+const DANGER = [
+  {e:'🦈', col:'#475569', r:45, min:1, max:4},
+  {e:'🐋', col:'#1e293b', r:55, min:1, max:7},
+];
+
+function xpFor(s){ return s*s*10+10; }
+
+function init(){
+  o={x:W/2,y:H/2,angle:0,r:20,trail:[]};
+  fish=[]; parts=[];
+  score=0; sz=1; xp=0; xpMax=xpFor(1); frame=0; maxSz=1;
+  mx=W/2; my=H/2;
+  running=false; started=false;
+  document.getElementById('over').style.display='none';
+  document.getElementById('msg').style.display='block';
+  hud();
+  for(let i=0;i<14;i++) spawn();
+}
+
+function hud(){
+  document.getElementById('sc').textContent=score;
+  document.getElementById('sz').textContent=sz;
+  document.getElementById('fill').style.width=Math.min(100,xp/xpMax*100)+'%';
+  if(sz>maxSz) maxSz=sz;
+}
+
+function rndEdge(){
+  const e=Math.floor(Math.random()*4);
+  if(e===0) return {x:Math.random()*W,y:-60};
+  if(e===1) return {x:Math.random()*W,y:H+60};
+  if(e===2) return {x:-60,y:Math.random()*H};
+  return {x:W+60,y:Math.random()*H};
+}
+
+function spawn(){
+  const depth=Math.min(PREY.length-1,sz);
+  const eligible=PREY.filter(p=>p.min<=sz);
+  const t=eligible[Math.floor(Math.random()*eligible.length)];
+  const {x,y}=rndEdge();
+  const ang=Math.random()*Math.PI*2;
+  fish.push({...t,x,y,ang,vx:Math.cos(ang)*t.spd,vy:Math.sin(ang)*t.spd,t:0,danger:false});
+}
+
+function spawnDanger(){
+  const el=DANGER.filter(d=>sz<=d.max&&sz>=d.min);
+  if(!el.length) return;
+  const t=el[Math.floor(Math.random()*el.length)];
+  const {x,y}=rndEdge();
+  const ang=Math.atan2(o.y-y,o.x-x);
+  fish.push({...t,x,y,ang,vx:Math.cos(ang)*2.2,vy:Math.sin(ang)*2.2,t:0,danger:true});
+}
+
+function burst(x,y,col,n=10){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2,s=2+Math.random()*4;
+    parts.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:30,ml:30,col,r:2+Math.random()*3});
+  }
+}
+
+// ── drawing helpers ──
+function bg(){
+  cx.fillStyle='#030d1a'; cx.fillRect(0,0,W,H);
+  cx.fillStyle='rgba(56,189,248,0.06)';
+  for(let i=0;i<25;i++){
+    const bx=(i*211+frame*0.25)%W, by=(i*137+frame*0.18)%H;
+    cx.beginPath(); cx.arc(bx,by,1.5+i%3,0,Math.PI*2); cx.fill();
+  }
+  cx.fillStyle='#06101e'; cx.fillRect(0,H-18,W,18);
+}
+
+function drawOrca(){
+  const r=o.r;
+  cx.save(); cx.translate(o.x,o.y); cx.rotate(o.angle);
+  // tail
+  cx.fillStyle='#1e293b';
+  cx.beginPath(); cx.moveTo(-r*1.2,0); cx.lineTo(-r*1.9,-r*0.75); cx.lineTo(-r*1.55,0); cx.lineTo(-r*1.9,r*0.75); cx.closePath(); cx.fill();
+  // body
+  cx.fillStyle='#1e293b';
+  cx.beginPath(); cx.ellipse(0,0,r*1.35,r*0.7,0,0,Math.PI*2); cx.fill();
+  // belly
+  cx.fillStyle='#f1f5f9';
+  cx.beginPath(); cx.ellipse(r*0.1,r*0.18,r*0.9,r*0.44,0,0,Math.PI*2); cx.fill();
+  // eye patch
+  cx.fillStyle='#f1f5f9';
+  cx.beginPath(); cx.ellipse(r*0.5,-r*0.32,r*0.28,r*0.19,0.3,0,Math.PI*2); cx.fill();
+  // fin
+  cx.fillStyle='#0f172a';
+  cx.beginPath(); cx.moveTo(0,-r*0.7); cx.lineTo(r*0.28,-r*1.45); cx.lineTo(r*0.52,-r*0.7); cx.closePath(); cx.fill();
+  // eye
+  cx.fillStyle='#0f172a'; cx.beginPath(); cx.arc(r*0.55,-r*0.3,r*0.11,0,Math.PI*2); cx.fill();
+  cx.fillStyle='#fff'; cx.beginPath(); cx.arc(r*0.58,-r*0.33,r*0.045,0,Math.PI*2); cx.fill();
+  // size
+  if(sz>1){
+    cx.fillStyle='#38bdf8'; cx.font=`bold ${Math.max(10,r*0.52)}px sans-serif`;
+    cx.textAlign='center'; cx.textBaseline='middle'; cx.fillText('Lv'+sz,0,r*0.95);
+  }
+  cx.restore();
+}
+
+function drawFish(f){
+  // emoji label
+  cx.font=`${f.r*2}px serif`;
+  cx.textAlign='center'; cx.textBaseline='middle';
+  // flip by direction
+  cx.save(); cx.translate(f.x,f.y);
+  if(f.vx<0) cx.scale(-1,1);
+  cx.fillText(f.e,0,0);
+  cx.restore();
+  // danger indicator
+  if(f.danger){
+    cx.fillStyle='#ef4444'; cx.font='bold 12px sans-serif';
+    cx.textAlign='center'; cx.textBaseline='bottom';
+    cx.fillText('！',f.x,f.y-f.r-4);
+  }
+}
+
+function loop(){
+  if(!running) return;
+  frame++;
+  cx.clearRect(0,0,W,H); bg();
+
+  // orca movement
+  const dx=mx-o.x, dy=my-o.y, dist=Math.sqrt(dx*dx+dy*dy);
+  if(dist>4){
+    const ta=Math.atan2(dy,dx);
+    let da=ta-o.angle; while(da>Math.PI)da-=Math.PI*2; while(da<-Math.PI)da+=Math.PI*2;
+    o.angle+=da*0.12;
+    const spd=Math.min(4.5+sz*0.4,dist*0.08+2);
+    o.x+=Math.cos(o.angle)*spd; o.y+=Math.sin(o.angle)*spd;
+  }
+  o.x=Math.max(o.r,Math.min(W-o.r,o.x));
+  o.y=Math.max(o.r,Math.min(H-o.r,o.y));
+
+  // spawn
+  if(frame%80===0) spawn();
+  if(frame%350===0) spawnDanger();
+  if(fish.length<10) spawn();
+
+  // fish logic
+  fish=fish.filter(f=>{
+    f.t++;
+    if(f.danger){
+      const fa=Math.atan2(o.y-f.y,o.x-f.x);
+      let da=fa-f.ang; while(da>Math.PI)da-=Math.PI*2; while(da<-Math.PI)da+=Math.PI*2;
+      f.ang+=da*0.05; f.vx=Math.cos(f.ang)*2.4; f.vy=Math.sin(f.ang)*2.4;
+    } else {
+      f.ang+=(Math.random()-.5)*0.07;
+      f.vx=f.vx*.96+Math.cos(f.ang)*f.spd*.04;
+      f.vy=f.vy*.96+Math.sin(f.ang)*f.spd*.04;
+      if(f.x<15||f.x>W-15){f.vx*=-1;f.ang=Math.atan2(f.vy,f.vx);}
+      if(f.y<15||f.y>H-15){f.vy*=-1;f.ang=Math.atan2(f.vy,f.vx);}
+    }
+    f.x+=f.vx; f.y+=f.vy;
+    if(Math.abs(f.x)>W+120||Math.abs(f.y)>H+120) return false;
+
+    // collision
+    const cdx=f.x-o.x, cdy=f.y-o.y;
+    if(Math.sqrt(cdx*cdx+cdy*cdy)<o.r+f.r*0.6){
+      if(f.danger||f.r>=o.r*0.9){endGame();return false;}
+      score++; xp+=f.xp; burst(f.x,f.y,f.col);
+      if(xp>=xpMax){xp-=xpMax;sz++;o.r=20+sz*5;xpMax=xpFor(sz);burst(o.x,o.y,'#38bdf8',22);}
+      hud(); return false;
+    }
+    drawFish(f); return true;
+  });
+
+  drawOrca();
+
+  // particles
+  parts=parts.filter(p=>p.life>0);
+  parts.forEach(p=>{
+    p.x+=p.vx; p.y+=p.vy; p.vy+=0.1; p.life--;
+    cx.globalAlpha=p.life/p.ml; cx.fillStyle=p.col;
+    cx.beginPath(); cx.arc(p.x,p.y,p.r,0,Math.PI*2); cx.fill(); cx.globalAlpha=1;
+  });
+
+  requestAnimationFrame(loop);
+}
+
+function start(){document.getElementById('msg').style.display='none';running=true;started=true;loop();}
+function endGame(){running=false;document.getElementById('fsc').textContent=score;document.getElementById('fsz').textContent=maxSz;document.getElementById('over').style.display='block';}
+function restart(){init();start();}
+
+cv.addEventListener('mousemove',e=>{const r=cv.getBoundingClientRect();mx=(e.clientX-r.left)*(W/r.width);my=(e.clientY-r.top)*(H/r.height);});
+cv.addEventListener('touchmove',e=>{const r=cv.getBoundingClientRect();mx=(e.touches[0].clientX-r.left)*(W/r.width);my=(e.touches[0].clientY-r.top)*(H/r.height);e.preventDefault();},{passive:false});
+cv.addEventListener('click',()=>{if(!started)start();});
+cv.addEventListener('touchstart',e=>{
+  if(!started){start();return;}
+  const r=cv.getBoundingClientRect();mx=(e.touches[0].clientX-r.left)*(W/r.width);my=(e.touches[0].clientY-r.top)*(H/r.height);
+  e.preventDefault();
+},{passive:false});
+
+init();
+</script>
+</body>
+</html>
